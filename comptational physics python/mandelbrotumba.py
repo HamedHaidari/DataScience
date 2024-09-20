@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import pylab as pl
 import time
 
-@jit(nopython=True, fastmath=True, parallel=True)
+@jit(nopython=True, fastmath=True)
 def MandNumba(ext, max_steps, Nx, Ny):
     data = np.ones((Ny, Nx)) * max_steps
     for i in range(Ny):
