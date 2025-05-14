@@ -1,0 +1,404 @@
+import tkinter as tk
+from tkinter import filedialog, scrolledtext, messagebox, ttk # ttk für Combobox
+import threading
+import os
+import subprocess # Für die Ausführung von Shell-Befehlen (ollama list, ollama pull)
+import re # Für das Parsen der Ausgabe von ollama list
+
+# Import Langchain components
+try:
+    from langchain_community.document_loaders import PyPDFLoader
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    from langchain_community.vectorstores import SKLearnVectorStore
+    from langchain_ollama import OllamaEmbeddings
+    from langchain_ollama import ChatOllama
+    from langchain.prompts import PromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.documents import Document
+except ImportError as e:
+    messagebox.showerror("Import Fehler", f"Notwendige Bibliotheken nicht gefunden: {e}\nBitte installieren Sie die erforderlichen Pakete (z.B. mit 'pip install langchain langchain_community scikit-learn ollama).")
+    exit()
+
+# --- Standard RAG Logik (unverändert) ---
+class RAGApplication:
+    def __init__(self, retriever, rag_chain):
+        self.retriever = retriever
+        self.rag_chain = rag_chain
+
+    def run(self, question):
+        if not self.retriever:
+            return "Fehler: Retriever wurde nicht initialisiert. Bitte laden Sie PDFs und konfigurieren Sie die Einstellungen."
+        try:
+            documents = self.retriever.invoke(question)
+            doc_texts = "\n".join([doc.page_content for doc in documents])
+            if not doc_texts and documents:
+                doc_texts = "Kein relevanter Inhalt in den abgerufenen Dokumenten gefunden."
+            elif not documents:
+                doc_texts = "Keine Dokumente vom Retriever zurückgegeben."
+            answer = self.rag_chain.invoke({"question": question, "documents": doc_texts})
+            return answer
+        except Exception as e:
+            return f"Fehler während der RAG-Ausführung: {e}"
+
+# --- GUI Anwendung ---
+class RAG_GUI:
+    def __init__(self, master):
+        self.master = master
+        master.title("RAG Anwendung GUI v2")
+        master.geometry("1050x800") # Etwas breiter für neue Elemente
+
+        self.pdf_file_paths = []
+        self.split_docs = []
+        self.retriever = None
+        self.rag_chain = None
+        self.rag_application = None
+        self.available_ollama_models = []
+
+        self.default_prompt_template = """Du bist ein Assistent für Frage-Antwort-Aufgaben.
+Verwende die folgenden Dokumente, um die Frage zu beantworten.
+Wenn du die Antwort nicht kennst, sage einfach, dass du es nicht weißt.
+Verwende maximal drei Sätze und halte die Antwort prägnant:
+Frage: {question}
+Dokumente: {documents}
+Antwort:
+"""
+        # --- Linke Spalte: Konfiguration ---
+        config_frame = tk.LabelFrame(master, text="Konfiguration", padx=10, pady=10)
+        config_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ns")
+        # Konfiguriere Spaltenbreiten im config_frame für bessere Ausrichtung
+        config_frame.columnconfigure(1, weight=1)
+
+
+        # PDF Loader
+        tk.Label(config_frame, text="PDF Dateien laden:").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,5))
+        self.pdf_list_label = tk.Label(config_frame, text="Keine Dateien ausgewählt.", wraplength=350, justify="left")
+        self.pdf_list_label.grid(row=1, column=0, columnspan=3, sticky="w")
+        tk.Button(config_frame, text="PDFs auswählen", command=self.load_pdfs).grid(row=2, column=0, columnspan=3, sticky="ew", pady=5)
+
+        # Text Splitter
+        tk.Label(config_frame, text="Text Splitter Einstellungen:", font=('Arial', 10, 'bold')).grid(row=3, column=0, columnspan=3, sticky="w", pady=(10,5))
+        tk.Label(config_frame, text="Chunk Größe:").grid(row=4, column=0, sticky="w")
+        self.chunk_size_var = tk.StringVar(value="1000")
+        tk.Entry(config_frame, textvariable=self.chunk_size_var, width=15).grid(row=4, column=1, columnspan=2, sticky="ew")
+
+        tk.Label(config_frame, text="Chunk Überlappung:").grid(row=5, column=0, sticky="w")
+        self.chunk_overlap_var = tk.StringVar(value="200")
+        tk.Entry(config_frame, textvariable=self.chunk_overlap_var, width=15).grid(row=5, column=1, columnspan=2, sticky="ew")
+
+        # Ollama Model Management
+        tk.Label(config_frame, text="Ollama Modell Management:", font=('Arial', 10, 'bold')).grid(row=6, column=0, columnspan=3, sticky="w", pady=(15,5))
+        
+        # Modell auswählen
+        tk.Label(config_frame, text="Modell auswählen (Embeddings & LLM):").grid(row=7, column=0, sticky="w")
+        self.ollama_model_var = tk.StringVar()
+        self.model_combobox = ttk.Combobox(config_frame, textvariable=self.ollama_model_var, width=25, state="readonly")
+        self.model_combobox.grid(row=7, column=1, sticky="ew", padx=(0,5))
+        tk.Button(config_frame, text="Aktual.", command=self.refresh_ollama_models_threaded, width=5).grid(row=7, column=2, sticky="e")
+        self.model_combobox.bind("<<ComboboxSelected>>", self.on_model_selected)
+
+
+        # Neues Modell installieren
+        tk.Label(config_frame, text="Neues Modell installieren:", font=('Arial', 9, 'italic')).grid(row=8, column=0, columnspan=3, sticky="w", pady=(10,2))
+        tk.Label(config_frame, text="Modellname (z.B. qwen2:0.5b):").grid(row=9, column=0, sticky="w")
+        self.model_to_install_var = tk.StringVar(value="")
+        self.model_to_install_entry = tk.Entry(config_frame, textvariable=self.model_to_install_var, width=28)
+        self.model_to_install_entry.grid(row=9, column=1, sticky="ew", padx=(0,5))
+        tk.Button(config_frame, text="Installieren", command=self.install_ollama_model_threaded, width=8).grid(row=9, column=2, sticky="e")
+
+
+        # Vectorstore Retriever
+        tk.Label(config_frame, text="Retriever Einstellungen:", font=('Arial', 10, 'bold')).grid(row=10, column=0, columnspan=3, sticky="w", pady=(15,5))
+        tk.Label(config_frame, text="K (Anzahl Dokumente):").grid(row=11, column=0, sticky="w")
+        self.k_var = tk.StringVar(value="4")
+        tk.Entry(config_frame, textvariable=self.k_var, width=15).grid(row=11, column=1, columnspan=2, sticky="ew")
+
+        # LLM Settings
+        tk.Label(config_frame, text="LLM Einstellungen:", font=('Arial', 10, 'bold')).grid(row=12, column=0, columnspan=3, sticky="w", pady=(10,5))
+        tk.Label(config_frame, text="Temperatur (0.0-1.0):").grid(row=13, column=0, sticky="w")
+        self.temperature_var = tk.StringVar(value="0.0")
+        tk.Entry(config_frame, textvariable=self.temperature_var, width=15).grid(row=13, column=1, columnspan=2, sticky="ew")
+
+        # Prompt Template
+        tk.Label(config_frame, text="Prompt Template:", font=('Arial', 10, 'bold')).grid(row=14, column=0, columnspan=3, sticky="w", pady=(10,5))
+        self.prompt_template_text = scrolledtext.ScrolledText(config_frame, wrap=tk.WORD, height=10, width=45)
+        self.prompt_template_text.insert(tk.INSERT, self.default_prompt_template)
+        self.prompt_template_text.grid(row=15, column=0, columnspan=3, sticky="ew")
+        
+        tk.Button(config_frame, text="RAG Pipeline Initialisieren/Aktualisieren", command=self.setup_rag_pipeline_threaded, height=2).grid(row=16, column=0, columnspan=3, sticky="ew", pady=(15,0))
+
+        # --- Rechte Spalte: Interaktion & Ausgabe ---
+        qa_frame = tk.LabelFrame(master, text="Frage & Antwort", padx=10, pady=10)
+        qa_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
+        master.grid_columnconfigure(1, weight=1)
+        master.grid_rowconfigure(0, weight=1)
+        qa_frame.grid_rowconfigure(3, weight=1)
+        qa_frame.grid_columnconfigure(0, weight=1)
+
+        tk.Label(qa_frame, text="Frage stellen:").grid(row=0, column=0, sticky="w", pady=5)
+        self.question_entry = tk.Entry(qa_frame, width=70)
+        self.question_entry.grid(row=1, column=0, sticky="ew", pady=5)
+        self.question_entry.insert(0, "")
+
+        tk.Button(qa_frame, text="Antwort generieren", command=self.get_answer_threaded, height=2).grid(row=2, column=0, sticky="ew", pady=10)
+
+        tk.Label(qa_frame, text="Antwort:").grid(row=3, column=0, sticky="nw", pady=5)
+        self.answer_text = scrolledtext.ScrolledText(qa_frame, wrap=tk.WORD, height=15, state='disabled')
+        self.answer_text.grid(row=4, column=0, sticky="nsew")
+        
+        # --- Statusleiste ---
+        self.status_var = tk.StringVar()
+        self.status_var.set("Bereit. Bitte Ollama Modellliste aktualisieren oder Modell auswählen.")
+        status_bar = tk.Label(master, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
+        
+        self.refresh_ollama_models_threaded() # Modelle beim Start laden
+
+    def on_model_selected(self, event=None):
+        selected_model = self.ollama_model_var.get()
+        self.status_var.set(f"Modell '{selected_model}' ausgewählt.")
+
+    def _execute_command(self, command_list):
+        """Hilfsfunktion zum Ausführen von Shell-Befehlen."""
+        try:
+            process = subprocess.Popen(command_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            stdout, stderr = process.communicate()
+            if process.returncode != 0:
+                return False, stderr.strip()
+            return True, stdout.strip()
+        except FileNotFoundError:
+            return False, f"Fehler: Der Befehl '{command_list[0]}' wurde nicht gefunden. Ist Ollama korrekt installiert und im PATH?"
+        except Exception as e:
+            return False, f"Ein unerwarteter Fehler ist aufgetreten: {e}"
+
+    def _refresh_ollama_models(self):
+        self.status_var.set("Aktualisiere Ollama Modellliste...")
+        self.master.update_idletasks()
+        success, output = self._execute_command(["ollama", "list"])
+        
+        if success:
+            self.available_ollama_models = []
+            lines = output.splitlines()
+            if len(lines) > 0 and "NAME" in lines[0]: # Header-Zeile überspringen
+                for line in lines[1:]:
+                    match = re.match(r"([^\s]+)\s+", line) # Erfasst den ersten Block ohne Leerzeichen (Modellname)
+                    if match:
+                        self.available_ollama_models.append(match.group(1))
+            
+            self.model_combobox['values'] = self.available_ollama_models
+            if self.available_ollama_models:
+                # Versuche, das aktuell ausgewählte Modell beizubehalten oder das erste auszuwählen
+                current_selection = self.ollama_model_var.get()
+                if current_selection not in self.available_ollama_models:
+                     self.ollama_model_var.set(self.available_ollama_models[0])
+                self.model_combobox.config(state="readonly")
+                self.status_var.set(f"{len(self.available_ollama_models)} Modelle geladen. Modell: '{self.ollama_model_var.get()}'")
+            else:
+                self.model_combobox.set('')
+                self.model_combobox.config(state="disabled") # Deaktivieren, wenn keine Modelle
+                self.status_var.set("Keine Ollama Modelle gefunden. Bitte installieren Sie welche.")
+            print(f"Verfügbare Modelle: {self.available_ollama_models}")
+        else:
+            messagebox.showerror("Fehler bei Ollama", f"Konnte 'ollama list' nicht ausführen:\n{output}")
+            self.status_var.set("Fehler beim Laden der Ollama Modellliste.")
+            self.model_combobox.set('')
+            self.model_combobox['values'] = []
+            self.model_combobox.config(state="disabled")
+
+    def refresh_ollama_models_threaded(self):
+        self.disable_buttons()
+        thread = threading.Thread(target=self._refresh_ollama_models)
+        thread.daemon = True
+        thread.start()
+        self.master.after(100, self.check_thread_and_enable_buttons, thread)
+
+    def _install_ollama_model(self):
+        model_name_to_install = self.model_to_install_var.get().strip()
+        if not model_name_to_install:
+            messagebox.showwarning("Kein Modellname", "Bitte geben Sie einen Modellnamen für die Installation ein.")
+            return
+
+        self.status_var.set(f"Installiere Modell '{model_name_to_install}'... Dies kann dauern.")
+        self.master.update_idletasks()
+        
+        # Zeige Popup, dass die Installation läuft und man im Terminal nachschauen kann
+        info_popup = tk.Toplevel(self.master)
+        info_popup.title("Modellinstallation")
+        tk.Label(info_popup, text=f"Installation von '{model_name_to_install}' läuft.\nDer Fortschritt ist im Terminal sichtbar, wenn Ollama dort gestartet wurde.\nDieses Fenster schließt sich bei Abschluss oder Fehler.").pack(padx=20, pady=20)
+        info_popup.transient(self.master) # Popup über Hauptfenster
+        info_popup.grab_set() # Modal machen
+        info_popup.geometry("+%d+%d" % (self.master.winfo_rootx()+50, self.master.winfo_rooty()+50))
+
+
+        success, output = self._execute_command(["ollama", "pull", model_name_to_install])
+        
+        info_popup.destroy() # Schließe das Popup
+
+        if success:
+            self.status_var.set(f"Modell '{model_name_to_install}' erfolgreich installiert/aktualisiert.")
+            messagebox.showinfo("Installation Erfolgreich", f"Modell '{model_name_to_install}' wurde erfolgreich installiert oder war bereits aktuell.")
+            self.model_to_install_var.set("") # Feld leeren
+            self.refresh_ollama_models_threaded() # Liste aktualisieren
+        else:
+            self.status_var.set(f"Fehler bei Installation von '{model_name_to_install}'.")
+            messagebox.showerror("Installationsfehler", f"Fehler bei der Installation von '{model_name_to_install}':\n{output}")
+
+    def install_ollama_model_threaded(self):
+        self.disable_buttons()
+        thread = threading.Thread(target=self._install_ollama_model)
+        thread.daemon = True
+        thread.start()
+        self.master.after(100, self.check_thread_and_enable_buttons, thread)
+
+
+    def load_pdfs(self):
+        filepaths = filedialog.askopenfilenames(
+            title="PDF Dateien auswählen",
+            filetypes=(("PDF Dateien", "*.pdf"), ("Alle Dateien", "*.*"))
+        )
+        if filepaths:
+            self.pdf_file_paths = list(filepaths)
+            self.pdf_list_label.config(text="\n".join([os.path.basename(fp) for fp in self.pdf_file_paths]))
+            self.status_var.set(f"{len(self.pdf_file_paths)} PDF(s) ausgewählt. Bitte RAG Pipeline initialisieren.")
+        else:
+            self.status_var.set("Keine PDFs ausgewählt.")
+
+    def _setup_rag_pipeline(self):
+        self.status_var.set("Initialisiere RAG Pipeline...")
+        self.master.update_idletasks()
+
+        if not self.pdf_file_paths:
+            messagebox.showwarning("Keine PDFs", "Bitte wählen Sie zuerst PDF-Dateien aus.")
+            self.status_var.set("Fehler: Keine PDFs ausgewählt.")
+            return
+
+        all_docs = []
+        for pdf_path in self.pdf_file_paths:
+            try:
+                loader = PyPDFLoader(pdf_path)
+                documents = loader.load()
+                all_docs.extend(documents)
+            except Exception as e:
+                messagebox.showerror("Ladefehler", f"Fehler beim Laden von '{pdf_path}': {e}")
+                self.status_var.set(f"Fehler beim Laden von '{pdf_path}'.")
+                return
+        
+        if not all_docs:
+            all_docs = [Document(page_content="Kein Inhalt aus PDFs geladen. Dies ist ein Platzhalter.")]
+            messagebox.showinfo("Kein Inhalt", "Kein Inhalt aus den PDFs geladen oder PDFs waren leer. Ein Platzhalterdokument wird verwendet.")
+
+        try:
+            chunk_size = int(self.chunk_size_var.get())
+            chunk_overlap = int(self.chunk_overlap_var.get())
+            k = int(self.k_var.get())
+            ollama_model = self.ollama_model_var.get() # Von Combobox
+            temperature = float(self.temperature_var.get())
+            prompt_template_str = self.prompt_template_text.get("1.0", tk.END).strip()
+        except ValueError as e:
+            messagebox.showerror("Eingabefehler", f"Ungültige Eingabe für Zahlenwerte: {e}")
+            self.status_var.set("Fehler: Ungültige Eingabe.")
+            return
+
+        if not ollama_model:
+            messagebox.showerror("Eingabefehler", "Kein Ollama Modell ausgewählt.")
+            self.status_var.set("Fehler: Kein Ollama Modell ausgewählt.")
+            return
+
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        self.split_docs = text_splitter.split_documents(all_docs)
+        if not self.split_docs:
+            self.split_docs = [Document(page_content="Keine Dokumente zum Splitten vorhanden. Dies ist ein Platzhalter.")]
+            messagebox.showwarning("Keine Split-Dokumente", "Keine Dokumente nach dem Splitting vorhanden. Ein Platzhalter wird verwendet.")
+
+        try:
+            embedding_object = OllamaEmbeddings(model=ollama_model)
+            vectorstore = SKLearnVectorStore.from_documents(documents=self.split_docs, embedding=embedding_object)
+            self.retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+            
+            prompt = PromptTemplate(template=prompt_template_str, input_variables=["question", "documents"])
+            llm = ChatOllama(model=ollama_model, temperature=temperature)
+            self.rag_chain = prompt | llm | StrOutputParser()
+            self.rag_application = RAGApplication(self.retriever, self.rag_chain)
+            self.status_var.set(f"RAG Pipeline mit Modell '{ollama_model}' initialisiert.")
+        except Exception as e:
+            error_msg = f"Fehler bei RAG-Pipeline-Setup: {e}\nStellen Sie sicher, dass Ollama läuft und das Modell '{ollama_model}' verfügbar ist."
+            messagebox.showerror("Initialisierungsfehler", error_msg)
+            self.status_var.set(f"Fehler: {e}")
+            print(error_msg)
+
+    def setup_rag_pipeline_threaded(self):
+        self.disable_buttons()
+        thread = threading.Thread(target=self._setup_rag_pipeline)
+        thread.daemon = True
+        thread.start()
+        self.master.after(100, self.check_thread_and_enable_buttons, thread)
+
+    def _get_answer(self):
+        self.status_var.set("Generiere Antwort...")
+        self.master.update_idletasks()
+
+        question = self.question_entry.get()
+        if not question:
+            messagebox.showwarning("Keine Frage", "Bitte geben Sie eine Frage ein.")
+            self.status_var.set("Bereit. Keine Frage eingegeben.")
+            return
+
+        if not self.rag_application:
+            messagebox.showerror("Nicht initialisiert", "Die RAG-Pipeline wurde noch nicht initialisiert.")
+            self.status_var.set("Fehler: RAG nicht initialisiert.")
+            return
+
+        self.answer_text.config(state='normal')
+        self.answer_text.delete("1.0", tk.END)
+        try:
+            answer = self.rag_application.run(question)
+            self.answer_text.insert(tk.INSERT, answer)
+        except Exception as e:
+            self.answer_text.insert(tk.INSERT, f"Ein Fehler ist aufgetreten: {e}")
+            messagebox.showerror("Fehler bei Antwortgenerierung", f"Fehler: {e}")
+        finally:
+            self.answer_text.config(state='disabled')
+            self.status_var.set("Antwort generiert.")
+
+    def get_answer_threaded(self):
+        self.disable_buttons()
+        thread = threading.Thread(target=self._get_answer)
+        thread.daemon = True
+        thread.start()
+        self.master.after(100, self.check_thread_and_enable_buttons, thread)
+
+    def disable_buttons(self):
+        """Deaktiviert alle relevanten Buttons während eines Vorgangs."""
+        for child in self.master.winfo_children(): # Iteriert über Haupt-Frames (config_frame, qa_frame)
+            if isinstance(child, tk.LabelFrame):
+                for widget in child.winfo_children():
+                    if isinstance(widget, (tk.Button, ttk.Button, ttk.Combobox)):
+                        widget.config(state=tk.DISABLED)
+        # Spezifische Buttons, die nicht in LabelFrames sind (falls vorhanden)
+        # z.B. self.mein_button.config(state=tk.DISABLED)
+
+
+    def enable_buttons(self):
+        """Aktiviert alle relevanten Buttons nach Abschluss eines Vorgangs."""
+        for child in self.master.winfo_children():
+             if isinstance(child, tk.LabelFrame):
+                for widget in child.winfo_children():
+                    if isinstance(widget, (tk.Button, ttk.Button)):
+                        widget.config(state=tk.NORMAL)
+        # Combobox speziell behandeln, da es 'readonly' sein kann
+        if self.available_ollama_models:
+            self.model_combobox.config(state="readonly")
+        else:
+            self.model_combobox.config(state="disabled")
+
+
+    def check_thread_and_enable_buttons(self, thread):
+        if thread.is_alive():
+            self.master.after(100, self.check_thread_and_enable_buttons, thread)
+        else:
+            self.enable_buttons()
+
+
+if __name__ == '__main__':
+    root = tk.Tk()
+    gui = RAG_GUI(root)
+    root.mainloop()
