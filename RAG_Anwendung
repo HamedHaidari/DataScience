@@ -1,9 +1,10 @@
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, messagebox, ttk # ttk für Combobox
+from tkinter import filedialog, scrolledtext, messagebox, ttk
 import threading
 import os
-import subprocess # Für die Ausführung von Shell-Befehlen (ollama list, ollama pull)
-import re # Für das Parsen der Ausgabe von ollama list
+import subprocess
+import re
+import webbrowser
 
 # Import Langchain components
 try:
@@ -44,8 +45,8 @@ class RAGApplication:
 class RAG_GUI:
     def __init__(self, master):
         self.master = master
-        master.title("RAG Anwendung GUI v2")
-        master.geometry("1050x800") # Etwas breiter für neue Elemente
+        master.title("RAG Anwendung GUI v2.4") # Versionsnummer angepasst
+        master.geometry("1050x940") # Höhe weiter angepasst für neue Felder
 
         self.pdf_file_paths = []
         self.split_docs = []
@@ -53,6 +54,7 @@ class RAG_GUI:
         self.rag_chain = None
         self.rag_application = None
         self.available_ollama_models = []
+        self.ollama_download_url = 'https://ollama.com/'
 
         self.default_prompt_template = """Du bist ein Assistent für Frage-Antwort-Aufgaben.
 Verwende die folgenden Dokumente, um die Frage zu beantworten.
@@ -65,73 +67,95 @@ Antwort:
         # --- Linke Spalte: Konfiguration ---
         config_frame = tk.LabelFrame(master, text="Konfiguration", padx=10, pady=10)
         config_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ns")
-        # Konfiguriere Spaltenbreiten im config_frame für bessere Ausrichtung
         config_frame.columnconfigure(1, weight=1)
 
-
+        current_row = 0
         # PDF Loader
-        tk.Label(config_frame, text="PDF Dateien laden:").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,5))
+        tk.Label(config_frame, text="PDF Dateien laden:").grid(row=current_row, column=0, columnspan=3, sticky="w", pady=(0,5)); current_row += 1
         self.pdf_list_label = tk.Label(config_frame, text="Keine Dateien ausgewählt.", wraplength=350, justify="left")
-        self.pdf_list_label.grid(row=1, column=0, columnspan=3, sticky="w")
-        tk.Button(config_frame, text="PDFs auswählen", command=self.load_pdfs).grid(row=2, column=0, columnspan=3, sticky="ew", pady=5)
+        self.pdf_list_label.grid(row=current_row, column=0, columnspan=3, sticky="w"); current_row += 1
+        tk.Button(config_frame, text="PDFs auswählen", command=self.load_pdfs).grid(row=current_row, column=0, columnspan=3, sticky="ew", pady=5); current_row += 1
 
         # Text Splitter
-        tk.Label(config_frame, text="Text Splitter Einstellungen:", font=('Arial', 10, 'bold')).grid(row=3, column=0, columnspan=3, sticky="w", pady=(10,5))
-        tk.Label(config_frame, text="Chunk Größe:").grid(row=4, column=0, sticky="w")
+        tk.Label(config_frame, text="Text Splitter Einstellungen:", font=('Arial', 10, 'bold')).grid(row=current_row, column=0, columnspan=3, sticky="w", pady=(10,5)); current_row += 1
+        tk.Label(config_frame, text="Chunk Größe:").grid(row=current_row, column=0, sticky="w")
         self.chunk_size_var = tk.StringVar(value="1000")
-        tk.Entry(config_frame, textvariable=self.chunk_size_var, width=15).grid(row=4, column=1, columnspan=2, sticky="ew")
-
-        tk.Label(config_frame, text="Chunk Überlappung:").grid(row=5, column=0, sticky="w")
+        tk.Entry(config_frame, textvariable=self.chunk_size_var, width=15).grid(row=current_row, column=1, columnspan=2, sticky="ew"); current_row += 1
+        tk.Label(config_frame, text="Chunk Überlappung:").grid(row=current_row, column=0, sticky="w")
         self.chunk_overlap_var = tk.StringVar(value="200")
-        tk.Entry(config_frame, textvariable=self.chunk_overlap_var, width=15).grid(row=5, column=1, columnspan=2, sticky="ew")
+        tk.Entry(config_frame, textvariable=self.chunk_overlap_var, width=15).grid(row=current_row, column=1, columnspan=2, sticky="ew"); current_row += 1
 
         # Ollama Model Management
-        tk.Label(config_frame, text="Ollama Modell Management:", font=('Arial', 10, 'bold')).grid(row=6, column=0, columnspan=3, sticky="w", pady=(15,5))
+        tk.Label(config_frame, text="Ollama Modell Management:", font=('Arial', 10, 'bold')).grid(row=current_row, column=0, columnspan=3, sticky="w", pady=(15,5)); current_row += 1
         
-        # Modell auswählen
-        tk.Label(config_frame, text="Modell auswählen (Embeddings & LLM):").grid(row=7, column=0, sticky="w")
-        self.ollama_model_var = tk.StringVar()
-        self.model_combobox = ttk.Combobox(config_frame, textvariable=self.ollama_model_var, width=25, state="readonly")
-        self.model_combobox.grid(row=7, column=1, sticky="ew", padx=(0,5))
-        tk.Button(config_frame, text="Aktual.", command=self.refresh_ollama_models_threaded, width=5).grid(row=7, column=2, sticky="e")
-        self.model_combobox.bind("<<ComboboxSelected>>", self.on_model_selected)
+        tk.Label(config_frame, text="Modell für Embeddings:").grid(row=current_row, column=0, sticky="w")
+        self.ollama_embedding_model_var = tk.StringVar()
+        self.embedding_model_combobox = ttk.Combobox(config_frame, textvariable=self.ollama_embedding_model_var, width=25, state="readonly")
+        self.embedding_model_combobox.grid(row=current_row, column=1, sticky="ew", padx=(0,5))
+        tk.Button(config_frame, text="Aktual.", command=self.refresh_ollama_models_threaded, width=5).grid(row=current_row, column=2, sticky="e")
+        self.embedding_model_combobox.bind("<<ComboboxSelected>>", self.on_embedding_model_selected); current_row += 1
 
+        tk.Label(config_frame, text="Modell für Chat/Antworten:").grid(row=current_row, column=0, sticky="w")
+        self.ollama_chat_model_var = tk.StringVar()
+        self.chat_model_combobox = ttk.Combobox(config_frame, textvariable=self.ollama_chat_model_var, width=25, state="readonly")
+        self.chat_model_combobox.grid(row=current_row, column=1, sticky="ew", padx=(0,5)); current_row += 1
+        self.chat_model_combobox.bind("<<ComboboxSelected>>", self.on_chat_model_selected)
 
-        # Neues Modell installieren
-        tk.Label(config_frame, text="Neues Modell installieren:", font=('Arial', 9, 'italic')).grid(row=8, column=0, columnspan=3, sticky="w", pady=(10,2))
-        tk.Label(config_frame, text="Modellname (z.B. qwen2:0.5b):").grid(row=9, column=0, sticky="w")
+        tk.Label(config_frame, text="Neues Modell installieren:", font=('Arial', 9, 'italic')).grid(row=current_row, column=0, columnspan=3, sticky="w", pady=(10,2)); current_row += 1
+        
+        install_frame = tk.Frame(config_frame) # Frame für bessere Anordnung
+        install_frame.grid(row=current_row, column=0, columnspan=3, sticky="ew"); current_row +=1
+        tk.Label(install_frame, text="Modellname:").pack(side=tk.LEFT, padx=(0,5))
         self.model_to_install_var = tk.StringVar(value="")
-        self.model_to_install_entry = tk.Entry(config_frame, textvariable=self.model_to_install_var, width=28)
-        self.model_to_install_entry.grid(row=9, column=1, sticky="ew", padx=(0,5))
-        tk.Button(config_frame, text="Installieren", command=self.install_ollama_model_threaded, width=8).grid(row=9, column=2, sticky="e")
+        self.model_to_install_entry = tk.Entry(install_frame, textvariable=self.model_to_install_var, width=28)
+        self.model_to_install_entry.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
+        tk.Button(install_frame, text="Installieren", command=self.install_ollama_model_threaded, width=8).pack(side=tk.LEFT)
+
+        # NEU: Modell löschen Sektion
+        tk.Label(config_frame, text="Modell löschen:", font=('Arial', 9, 'italic')).grid(row=current_row, column=0, columnspan=3, sticky="w", pady=(10,2)); current_row += 1
+        
+        delete_frame = tk.Frame(config_frame) # Frame für bessere Anordnung
+        delete_frame.grid(row=current_row, column=0, columnspan=3, sticky="ew"); current_row +=1
+        tk.Label(delete_frame, text="Modell auswählen:").pack(side=tk.LEFT, padx=(0,5))
+        self.model_to_delete_var = tk.StringVar()
+        self.model_to_delete_combobox = ttk.Combobox(delete_frame, textvariable=self.model_to_delete_var, width=25, state="readonly")
+        self.model_to_delete_combobox.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
+        tk.Button(delete_frame, text="Löschen", command=self.delete_ollama_model_threaded, width=8).pack(side=tk.LEFT)
 
 
         # Vectorstore Retriever
-        tk.Label(config_frame, text="Retriever Einstellungen:", font=('Arial', 10, 'bold')).grid(row=10, column=0, columnspan=3, sticky="w", pady=(15,5))
-        tk.Label(config_frame, text="K (Anzahl Dokumente):").grid(row=11, column=0, sticky="w")
+        tk.Label(config_frame, text="Retriever Einstellungen:", font=('Arial', 10, 'bold')).grid(row=current_row, column=0, columnspan=3, sticky="w", pady=(15,5)); current_row += 1
+        tk.Label(config_frame, text="K (Anzahl Dokumente):").grid(row=current_row, column=0, sticky="w")
         self.k_var = tk.StringVar(value="4")
-        tk.Entry(config_frame, textvariable=self.k_var, width=15).grid(row=11, column=1, columnspan=2, sticky="ew")
+        tk.Entry(config_frame, textvariable=self.k_var, width=15).grid(row=current_row, column=1, columnspan=2, sticky="ew"); current_row += 1
 
         # LLM Settings
-        tk.Label(config_frame, text="LLM Einstellungen:", font=('Arial', 10, 'bold')).grid(row=12, column=0, columnspan=3, sticky="w", pady=(10,5))
-        tk.Label(config_frame, text="Temperatur (0.0-1.0):").grid(row=13, column=0, sticky="w")
+        tk.Label(config_frame, text="LLM (Chat Modell) Einstellungen:", font=('Arial', 10, 'bold')).grid(row=current_row, column=0, columnspan=3, sticky="w", pady=(10,5)); current_row += 1
+        tk.Label(config_frame, text="Temperatur (0.0-1.0):").grid(row=current_row, column=0, sticky="w")
         self.temperature_var = tk.StringVar(value="0.0")
-        tk.Entry(config_frame, textvariable=self.temperature_var, width=15).grid(row=13, column=1, columnspan=2, sticky="ew")
+        tk.Entry(config_frame, textvariable=self.temperature_var, width=15).grid(row=current_row, column=1, columnspan=2, sticky="ew"); current_row += 1
+        tk.Label(config_frame, text="Max. Kontext-Token (num_ctx):").grid(row=current_row, column=0, sticky="w")
+        self.num_ctx_var = tk.StringVar(value="2048")
+        tk.Entry(config_frame, textvariable=self.num_ctx_var, width=15).grid(row=current_row, column=1, columnspan=2, sticky="ew"); current_row += 1
+        tk.Label(config_frame, text="Max. Antwort-Token (num_predict):").grid(row=current_row, column=0, sticky="w")
+        self.num_predict_var = tk.StringVar(value="256")
+        tk.Entry(config_frame, textvariable=self.num_predict_var, width=15).grid(row=current_row, column=1, columnspan=2, sticky="ew"); current_row += 1
 
         # Prompt Template
-        tk.Label(config_frame, text="Prompt Template:", font=('Arial', 10, 'bold')).grid(row=14, column=0, columnspan=3, sticky="w", pady=(10,5))
-        self.prompt_template_text = scrolledtext.ScrolledText(config_frame, wrap=tk.WORD, height=10, width=45)
+        tk.Label(config_frame, text="Prompt Template:", font=('Arial', 10, 'bold')).grid(row=current_row, column=0, columnspan=3, sticky="w", pady=(10,5)); current_row += 1
+        self.prompt_template_text = scrolledtext.ScrolledText(config_frame, wrap=tk.WORD, height=7, width=45) # Höhe ggf. angepasst
         self.prompt_template_text.insert(tk.INSERT, self.default_prompt_template)
-        self.prompt_template_text.grid(row=15, column=0, columnspan=3, sticky="ew")
+        self.prompt_template_text.grid(row=current_row, column=0, columnspan=3, sticky="ew"); current_row += 1
         
-        tk.Button(config_frame, text="RAG Pipeline Initialisieren/Aktualisieren", command=self.setup_rag_pipeline_threaded, height=2).grid(row=16, column=0, columnspan=3, sticky="ew", pady=(15,0))
+        # Button Initialisieren
+        tk.Button(config_frame, text="RAG Pipeline Initialisieren/Aktualisieren", command=self.setup_rag_pipeline_threaded, height=2).grid(row=current_row, column=0, columnspan=3, sticky="ew", pady=(15,0)); current_row += 1
 
         # --- Rechte Spalte: Interaktion & Ausgabe ---
         qa_frame = tk.LabelFrame(master, text="Frage & Antwort", padx=10, pady=10)
         qa_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
         master.grid_columnconfigure(1, weight=1)
         master.grid_rowconfigure(0, weight=1)
-        qa_frame.grid_rowconfigure(3, weight=1)
+        qa_frame.grid_rowconfigure(4, weight=1) 
         qa_frame.grid_columnconfigure(0, weight=1)
 
         tk.Label(qa_frame, text="Frage stellen:").grid(row=0, column=0, sticky="w", pady=5)
@@ -147,28 +171,54 @@ Antwort:
         
         # --- Statusleiste ---
         self.status_var = tk.StringVar()
-        self.status_var.set("Bereit. Bitte Ollama Modellliste aktualisieren oder Modell auswählen.")
+        self.status_var.set("Bereit. Bitte Ollama Modellliste aktualisieren oder Modelle auswählen.")
         status_bar = tk.Label(master, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
         
-        self.refresh_ollama_models_threaded() # Modelle beim Start laden
+        self.refresh_ollama_models_threaded()
 
-    def on_model_selected(self, event=None):
-        selected_model = self.ollama_model_var.get()
-        self.status_var.set(f"Modell '{selected_model}' ausgewählt.")
+    def on_embedding_model_selected(self, event=None):
+        selected_model = self.ollama_embedding_model_var.get()
+        if selected_model:
+            self.status_var.set(f"Embedding-Modell '{selected_model}' ausgewählt.")
+
+    def on_chat_model_selected(self, event=None):
+        selected_model = self.ollama_chat_model_var.get()
+        if selected_model:
+            self.status_var.set(f"Chat-Modell '{selected_model}' ausgewählt.")
 
     def _execute_command(self, command_list):
-        """Hilfsfunktion zum Ausführen von Shell-Befehlen."""
         try:
-            process = subprocess.Popen(command_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            process = subprocess.Popen(
+                command_list,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
             stdout, stderr = process.communicate()
             if process.returncode != 0:
+                if ("No such file or directory" in stderr or "Der Befehl" in stderr and "nicht gefunden" in stderr) and command_list[0] == "ollama":
+                    return False, f"Fehler: Der Befehl '{command_list[0]}' wurde nicht gefunden. Ist Ollama korrekt installiert und im PATH? \nFür die Installation besuchen Sie: {self.ollama_download_url}"
                 return False, stderr.strip()
             return True, stdout.strip()
         except FileNotFoundError:
-            return False, f"Fehler: Der Befehl '{command_list[0]}' wurde nicht gefunden. Ist Ollama korrekt installiert und im PATH?"
+            return False, f"Fehler: Der Befehl '{command_list[0]}' wurde nicht gefunden. Ist Ollama korrekt installiert und im PATH? \nFür die Installation besuchen Sie: {self.ollama_download_url}"
         except Exception as e:
             return False, f"Ein unerwarteter Fehler ist aufgetreten: {e}"
+
+    def _handle_ollama_not_found(self, error_message):
+        if messagebox.askyesno("Ollama nicht gefunden",
+                               f"{error_message}\n\nMöchten Sie die Ollama Download-Seite jetzt öffnen?",
+                               icon='warning'):
+            webbrowser.open_new_tab(self.ollama_download_url)
+        self.status_var.set("Ollama nicht gefunden. Bitte installieren und erneut versuchen.")
+        self.embedding_model_combobox.set(''); self.chat_model_combobox.set(''); self.model_to_delete_combobox.set('')
+        self.embedding_model_combobox['values'] = []; self.chat_model_combobox['values'] = []; self.model_to_delete_combobox['values'] = []
+        self.embedding_model_combobox.config(state="disabled"); self.chat_model_combobox.config(state="disabled"); self.model_to_delete_combobox.config(state="disabled")
+
 
     def _refresh_ollama_models(self):
         self.status_var.set("Aktualisiere Ollama Modellliste...")
@@ -178,34 +228,67 @@ Antwort:
         if success:
             self.available_ollama_models = []
             lines = output.splitlines()
-            if len(lines) > 0 and "NAME" in lines[0]: # Header-Zeile überspringen
+            if len(lines) > 0 and "NAME" in lines[0].upper():
                 for line in lines[1:]:
-                    match = re.match(r"([^\s]+)\s+", line) # Erfasst den ersten Block ohne Leerzeichen (Modellname)
+                    match = re.match(r"([^\s:]+[:\w.-]*[^\s])\s+", line)
                     if match:
-                        self.available_ollama_models.append(match.group(1))
+                        self.available_ollama_models.append(match.group(1).strip())
             
-            self.model_combobox['values'] = self.available_ollama_models
+            self.embedding_model_combobox['values'] = self.available_ollama_models
+            self.chat_model_combobox['values'] = self.available_ollama_models
+            self.model_to_delete_combobox['values'] = self.available_ollama_models # NEU
+
             if self.available_ollama_models:
-                # Versuche, das aktuell ausgewählte Modell beizubehalten oder das erste auszuwählen
-                current_selection = self.ollama_model_var.get()
-                if current_selection not in self.available_ollama_models:
-                     self.ollama_model_var.set(self.available_ollama_models[0])
-                self.model_combobox.config(state="readonly")
-                self.status_var.set(f"{len(self.available_ollama_models)} Modelle geladen. Modell: '{self.ollama_model_var.get()}'")
+                # Embedding Model Auswahl
+                current_emb_selection = self.ollama_embedding_model_var.get()
+                if not current_emb_selection or current_emb_selection not in self.available_ollama_models:
+                    default_emb_models = ["nomic-embed-text", "mxbai-embed-large", "all-minilm"]
+                    chosen_default_emb = ""
+                    for demb_model_base in default_emb_models:
+                        for actual_model in self.available_ollama_models:
+                            if demb_model_base in actual_model: chosen_default_emb = actual_model; break
+                        if chosen_default_emb: break
+                    if not chosen_default_emb: chosen_default_emb = self.available_ollama_models[0]
+                    self.ollama_embedding_model_var.set(chosen_default_emb)
+                self.embedding_model_combobox.config(state="readonly")
+
+                # Chat Model Auswahl
+                current_chat_selection = self.ollama_chat_model_var.get()
+                if not current_chat_selection or current_chat_selection not in self.available_ollama_models:
+                    default_chat_bases = ["llama3", "gemma2", "mistral", "qwen2", "llava"] # llava hinzugefügt
+                    chosen_default_chat = ""
+                    for chat_base in default_chat_bases:
+                        for actual_model in self.available_ollama_models:
+                            if chat_base in actual_model and "embed" not in actual_model.lower():
+                                chosen_default_chat = actual_model; break
+                        if chosen_default_chat: break
+                    if not chosen_default_chat: chosen_default_chat = self.available_ollama_models[0]
+                    self.ollama_chat_model_var.set(chosen_default_chat)
+                self.chat_model_combobox.config(state="readonly")
+
+                # Modell zum Löschen Auswahl (Standard: leer oder erstes)
+                current_delete_selection = self.model_to_delete_var.get()
+                if not current_delete_selection or current_delete_selection not in self.available_ollama_models:
+                    self.model_to_delete_var.set(self.available_ollama_models[0]) # Oder leer lassen: self.model_to_delete_var.set("")
+                self.model_to_delete_combobox.config(state="readonly")
+                
+                self.status_var.set(f"{len(self.available_ollama_models)} Modelle geladen. Bitte Modelle auswählen.")
             else:
-                self.model_combobox.set('')
-                self.model_combobox.config(state="disabled") # Deaktivieren, wenn keine Modelle
-                self.status_var.set("Keine Ollama Modelle gefunden. Bitte installieren Sie welche.")
-            print(f"Verfügbare Modelle: {self.available_ollama_models}")
+                for cb in [self.embedding_model_combobox, self.chat_model_combobox, self.model_to_delete_combobox]:
+                    cb.set(''); cb['values'] = []; cb.config(state="disabled")
+                self.status_var.set("Keine Ollama Modelle gefunden.")
         else:
-            messagebox.showerror("Fehler bei Ollama", f"Konnte 'ollama list' nicht ausführen:\n{output}")
-            self.status_var.set("Fehler beim Laden der Ollama Modellliste.")
-            self.model_combobox.set('')
-            self.model_combobox['values'] = []
-            self.model_combobox.config(state="disabled")
+            if f"Der Befehl 'ollama' wurde nicht gefunden" in output:
+                self._handle_ollama_not_found(output)
+            else:
+                messagebox.showerror("Fehler bei Ollama", f"Konnte 'ollama list' nicht ausführen:\n{output}")
+                self.status_var.set("Fehler beim Laden der Ollama Modellliste.")
+                for cb in [self.embedding_model_combobox, self.chat_model_combobox, self.model_to_delete_combobox]:
+                    cb.set(''); cb['values'] = []; cb.config(state="disabled")
+
 
     def refresh_ollama_models_threaded(self):
-        self.disable_buttons()
+        self.disable_buttons() # Deaktiviert auch die neuen Widgets, wenn sie korrekt behandelt werden
         thread = threading.Thread(target=self._refresh_ollama_models)
         thread.daemon = True
         thread.start()
@@ -216,45 +299,70 @@ Antwort:
         if not model_name_to_install:
             messagebox.showwarning("Kein Modellname", "Bitte geben Sie einen Modellnamen für die Installation ein.")
             return
-
         self.status_var.set(f"Installiere Modell '{model_name_to_install}'... Dies kann dauern.")
         self.master.update_idletasks()
-        
-        # Zeige Popup, dass die Installation läuft und man im Terminal nachschauen kann
-        info_popup = tk.Toplevel(self.master)
-        info_popup.title("Modellinstallation")
-        tk.Label(info_popup, text=f"Installation von '{model_name_to_install}' läuft.\nDer Fortschritt ist im Terminal sichtbar, wenn Ollama dort gestartet wurde.\nDieses Fenster schließt sich bei Abschluss oder Fehler.").pack(padx=20, pady=20)
-        info_popup.transient(self.master) # Popup über Hauptfenster
-        info_popup.grab_set() # Modal machen
+        info_popup = tk.Toplevel(self.master); info_popup.title("Modellinstallation")
+        tk.Label(info_popup, text=f"Installation von '{model_name_to_install}' läuft...\nDetails im Terminal. Fenster schließt automatisch.").pack(padx=20, pady=20)
+        info_popup.transient(self.master); info_popup.grab_set()
         info_popup.geometry("+%d+%d" % (self.master.winfo_rootx()+50, self.master.winfo_rooty()+50))
-
-
         success, output = self._execute_command(["ollama", "pull", model_name_to_install])
-        
-        info_popup.destroy() # Schließe das Popup
-
+        info_popup.destroy()
         if success:
             self.status_var.set(f"Modell '{model_name_to_install}' erfolgreich installiert/aktualisiert.")
             messagebox.showinfo("Installation Erfolgreich", f"Modell '{model_name_to_install}' wurde erfolgreich installiert oder war bereits aktuell.")
-            self.model_to_install_var.set("") # Feld leeren
-            self.refresh_ollama_models_threaded() # Liste aktualisieren
+            self.model_to_install_var.set("")
+            self.refresh_ollama_models_threaded()
         else:
-            self.status_var.set(f"Fehler bei Installation von '{model_name_to_install}'.")
-            messagebox.showerror("Installationsfehler", f"Fehler bei der Installation von '{model_name_to_install}':\n{output}")
+            if f"Der Befehl 'ollama' wurde nicht gefunden" in output: self._handle_ollama_not_found(output)
+            else:
+                self.status_var.set(f"Fehler bei Installation von '{model_name_to_install}'.")
+                messagebox.showerror("Installationsfehler", f"Fehler: {output}")
 
     def install_ollama_model_threaded(self):
         self.disable_buttons()
         thread = threading.Thread(target=self._install_ollama_model)
+        thread.daemon = True; thread.start()
+        self.master.after(100, self.check_thread_and_enable_buttons, thread)
+
+    # NEUE METHODEN ZUM LÖSCHEN VON MODELLEN
+    def _delete_ollama_model(self):
+        model_name_to_delete = self.model_to_delete_var.get()
+        if not model_name_to_delete:
+            messagebox.showwarning("Kein Modell ausgewählt", "Bitte wählen Sie ein Modell aus der Liste zum Löschen aus.")
+            return
+
+        if messagebox.askyesno("Löschen bestätigen", 
+                               f"Sind Sie sicher, dass Sie das Modell '{model_name_to_delete}' unwiderruflich löschen möchten?",
+                               icon='warning'):
+            self.status_var.set(f"Lösche Modell '{model_name_to_delete}'...")
+            self.master.update_idletasks()
+            success, output = self._execute_command(["ollama", "rm", model_name_to_delete])
+
+            if success:
+                self.status_var.set(f"Modell '{model_name_to_delete}' erfolgreich gelöscht.")
+                messagebox.showinfo("Löschen erfolgreich", f"Modell '{model_name_to_delete}' wurde gelöscht.")
+                self.model_to_delete_var.set("") # Auswahl zurücksetzen
+                self.refresh_ollama_models_threaded() # Liste aktualisieren
+            else:
+                # Prüfen, ob Ollama selbst nicht gefunden wurde
+                if f"Der Befehl 'ollama' wurde nicht gefunden" in output:
+                     self._handle_ollama_not_found(output)
+                else:
+                    self.status_var.set(f"Fehler beim Löschen von '{model_name_to_delete}'.")
+                    messagebox.showerror("Löschfehler", f"Konnte Modell '{model_name_to_delete}' nicht löschen:\n{output}")
+        else:
+            self.status_var.set(f"Löschvorgang für '{model_name_to_delete}' abgebrochen.")
+
+    def delete_ollama_model_threaded(self):
+        self.disable_buttons()
+        thread = threading.Thread(target=self._delete_ollama_model)
         thread.daemon = True
         thread.start()
         self.master.after(100, self.check_thread_and_enable_buttons, thread)
+    # ENDE NEUE METHODEN ZUM LÖSCHEN
 
-
-    def load_pdfs(self):
-        filepaths = filedialog.askopenfilenames(
-            title="PDF Dateien auswählen",
-            filetypes=(("PDF Dateien", "*.pdf"), ("Alle Dateien", "*.*"))
-        )
+    def load_pdfs(self): # Unverändert
+        filepaths = filedialog.askopenfilenames(title="PDF Dateien auswählen", filetypes=(("PDF Dateien", "*.pdf"), ("Alle Dateien", "*.*")))
         if filepaths:
             self.pdf_file_paths = list(filepaths)
             self.pdf_list_label.config(text="\n".join([os.path.basename(fp) for fp in self.pdf_file_paths]))
@@ -262,141 +370,95 @@ Antwort:
         else:
             self.status_var.set("Keine PDFs ausgewählt.")
 
-    def _setup_rag_pipeline(self):
+    def _setup_rag_pipeline(self): # Unverändert in der Logik, verwendet aber die zwei Modellvariablen
         self.status_var.set("Initialisiere RAG Pipeline...")
         self.master.update_idletasks()
-
         if not self.pdf_file_paths:
-            messagebox.showwarning("Keine PDFs", "Bitte wählen Sie zuerst PDF-Dateien aus.")
-            self.status_var.set("Fehler: Keine PDFs ausgewählt.")
-            return
-
+            messagebox.showwarning("Keine PDFs", "Bitte wählen Sie zuerst PDF-Dateien aus."); self.status_var.set("Fehler: Keine PDFs ausgewählt."); return
         all_docs = []
         for pdf_path in self.pdf_file_paths:
-            try:
-                loader = PyPDFLoader(pdf_path)
-                documents = loader.load()
-                all_docs.extend(documents)
-            except Exception as e:
-                messagebox.showerror("Ladefehler", f"Fehler beim Laden von '{pdf_path}': {e}")
-                self.status_var.set(f"Fehler beim Laden von '{pdf_path}'.")
-                return
-        
+            try: loader = PyPDFLoader(pdf_path); documents = loader.load(); all_docs.extend(documents)
+            except Exception as e: messagebox.showerror("Ladefehler", f"Fehler: {e}"); self.status_var.set(f"Fehler: {e}"); return
         if not all_docs:
-            all_docs = [Document(page_content="Kein Inhalt aus PDFs geladen. Dies ist ein Platzhalter.")]
-            messagebox.showinfo("Kein Inhalt", "Kein Inhalt aus den PDFs geladen oder PDFs waren leer. Ein Platzhalterdokument wird verwendet.")
-
+            all_docs = [Document(page_content="Kein Inhalt aus PDFs geladen.")]; messagebox.showinfo("Kein Inhalt", "Kein Inhalt aus PDFs.")
         try:
-            chunk_size = int(self.chunk_size_var.get())
-            chunk_overlap = int(self.chunk_overlap_var.get())
-            k = int(self.k_var.get())
-            ollama_model = self.ollama_model_var.get() # Von Combobox
-            temperature = float(self.temperature_var.get())
+            chunk_size = int(self.chunk_size_var.get()); chunk_overlap = int(self.chunk_overlap_var.get())
+            k = int(self.k_var.get()); embedding_model_name = self.ollama_embedding_model_var.get()
+            chat_model_name = self.ollama_chat_model_var.get(); temperature = float(self.temperature_var.get())
+            num_ctx_val = int(self.num_ctx_var.get()); num_predict_val = int(self.num_predict_var.get())
             prompt_template_str = self.prompt_template_text.get("1.0", tk.END).strip()
-        except ValueError as e:
-            messagebox.showerror("Eingabefehler", f"Ungültige Eingabe für Zahlenwerte: {e}")
-            self.status_var.set("Fehler: Ungültige Eingabe.")
-            return
-
-        if not ollama_model:
-            messagebox.showerror("Eingabefehler", "Kein Ollama Modell ausgewählt.")
-            self.status_var.set("Fehler: Kein Ollama Modell ausgewählt.")
-            return
-
+        except ValueError as e: messagebox.showerror("Eingabefehler", f"Ungültige Zahlen: {e}"); self.status_var.set("Fehler: Ungültige Zahl."); return
+        if not embedding_model_name: messagebox.showerror("Eingabefehler", "Kein Embedding-Modell."); self.status_var.set("Fehler: Embedding-Modell fehlt."); return
+        if not chat_model_name: messagebox.showerror("Eingabefehler", "Kein Chat-Modell."); self.status_var.set("Fehler: Chat-Modell fehlt."); return
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         self.split_docs = text_splitter.split_documents(all_docs)
-        if not self.split_docs:
-            self.split_docs = [Document(page_content="Keine Dokumente zum Splitten vorhanden. Dies ist ein Platzhalter.")]
-            messagebox.showwarning("Keine Split-Dokumente", "Keine Dokumente nach dem Splitting vorhanden. Ein Platzhalter wird verwendet.")
-
+        if not self.split_docs: self.split_docs = [Document(page_content="Keine Dokumente zum Splitten.")]; messagebox.showwarning("Keine Split-Dokumente", "Keine Dokumente nach Splitting.")
         try:
-            embedding_object = OllamaEmbeddings(model=ollama_model)
+            self.status_var.set(f"Erstelle Embeddings mit '{embedding_model_name}'..."); self.master.update_idletasks()
+            embedding_object = OllamaEmbeddings(model=embedding_model_name)
+            self.status_var.set(f"Erstelle Vectorstore..."); self.master.update_idletasks()
             vectorstore = SKLearnVectorStore.from_documents(documents=self.split_docs, embedding=embedding_object)
             self.retriever = vectorstore.as_retriever(search_kwargs={"k": k})
-            
             prompt = PromptTemplate(template=prompt_template_str, input_variables=["question", "documents"])
-            llm = ChatOllama(model=ollama_model, temperature=temperature)
+            llm = ChatOllama(model=chat_model_name, temperature=temperature, num_ctx=num_ctx_val, num_predict=num_predict_val)
             self.rag_chain = prompt | llm | StrOutputParser()
             self.rag_application = RAGApplication(self.retriever, self.rag_chain)
-            self.status_var.set(f"RAG Pipeline mit Modell '{ollama_model}' initialisiert.")
+            self.status_var.set(f"RAG Pipeline: Emb '{embedding_model_name}', Chat '{chat_model_name}'.")
         except Exception as e:
-            error_msg = f"Fehler bei RAG-Pipeline-Setup: {e}\nStellen Sie sicher, dass Ollama läuft und das Modell '{ollama_model}' verfügbar ist."
-            messagebox.showerror("Initialisierungsfehler", error_msg)
-            self.status_var.set(f"Fehler: {e}")
-            print(error_msg)
+            error_message = f"Fehler bei RAG-Pipeline-Setup: {e}"
+            if "this model does not support embeddings" in str(e).lower(): error_message = f"Fehler: Embedding-Modell '{embedding_model_name}' unterstützt keine Embeddings.\nOriginal: {e}"
+            elif "Connection refused" in str(e) or "Failed to connect" in str(e): error_message += f"\nOllama scheint nicht zu laufen."
+            messagebox.showerror("Initialisierungsfehler", error_message); self.status_var.set(f"Fehler bei Pipeline-Setup."); print(error_message)
 
-    def setup_rag_pipeline_threaded(self):
-        self.disable_buttons()
-        thread = threading.Thread(target=self._setup_rag_pipeline)
-        thread.daemon = True
-        thread.start()
+    def setup_rag_pipeline_threaded(self): # Unverändert
+        self.disable_buttons(); thread = threading.Thread(target=self._setup_rag_pipeline); thread.daemon = True; thread.start()
         self.master.after(100, self.check_thread_and_enable_buttons, thread)
 
-    def _get_answer(self):
-        self.status_var.set("Generiere Antwort...")
-        self.master.update_idletasks()
-
+    def _get_answer(self): # Unverändert
+        self.status_var.set("Generiere Antwort..."); self.master.update_idletasks()
         question = self.question_entry.get()
-        if not question:
-            messagebox.showwarning("Keine Frage", "Bitte geben Sie eine Frage ein.")
-            self.status_var.set("Bereit. Keine Frage eingegeben.")
-            return
+        if not question: messagebox.showwarning("Keine Frage", "Bitte Frage eingeben."); self.status_var.set("Bereit."); return
+        if not self.rag_application: messagebox.showerror("Nicht initialisiert", "Pipeline nicht initialisiert."); self.status_var.set("Fehler: RAG nicht initialisiert."); return
+        self.answer_text.config(state='normal'); self.answer_text.delete("1.0", tk.END)
+        try: answer = self.rag_application.run(question); self.answer_text.insert(tk.INSERT, answer)
+        except Exception as e: self.answer_text.insert(tk.INSERT, f"Fehler: {e}"); messagebox.showerror("Fehler bei Antwort", f"Fehler: {e}")
+        finally: self.answer_text.config(state='disabled'); self.status_var.set("Antwort generiert.")
 
-        if not self.rag_application:
-            messagebox.showerror("Nicht initialisiert", "Die RAG-Pipeline wurde noch nicht initialisiert.")
-            self.status_var.set("Fehler: RAG nicht initialisiert.")
-            return
-
-        self.answer_text.config(state='normal')
-        self.answer_text.delete("1.0", tk.END)
-        try:
-            answer = self.rag_application.run(question)
-            self.answer_text.insert(tk.INSERT, answer)
-        except Exception as e:
-            self.answer_text.insert(tk.INSERT, f"Ein Fehler ist aufgetreten: {e}")
-            messagebox.showerror("Fehler bei Antwortgenerierung", f"Fehler: {e}")
-        finally:
-            self.answer_text.config(state='disabled')
-            self.status_var.set("Antwort generiert.")
-
-    def get_answer_threaded(self):
-        self.disable_buttons()
-        thread = threading.Thread(target=self._get_answer)
-        thread.daemon = True
-        thread.start()
+    def get_answer_threaded(self): # Unverändert
+        self.disable_buttons(); thread = threading.Thread(target=self._get_answer); thread.daemon = True; thread.start()
         self.master.after(100, self.check_thread_and_enable_buttons, thread)
 
-    def disable_buttons(self):
-        """Deaktiviert alle relevanten Buttons während eines Vorgangs."""
-        for child in self.master.winfo_children(): # Iteriert über Haupt-Frames (config_frame, qa_frame)
+    def disable_buttons(self): # Erweitert um model_to_delete_combobox
+        for child in self.master.winfo_children():
             if isinstance(child, tk.LabelFrame):
                 for widget in child.winfo_children():
-                    if isinstance(widget, (tk.Button, ttk.Button, ttk.Combobox)):
-                        widget.config(state=tk.DISABLED)
-        # Spezifische Buttons, die nicht in LabelFrames sind (falls vorhanden)
-        # z.B. self.mein_button.config(state=tk.DISABLED)
+                    if isinstance(widget, (tk.Button, ttk.Button, ttk.Combobox)): widget.config(state=tk.DISABLED)
+                    elif isinstance(widget, tk.Frame): # Für install_frame und delete_frame
+                        for sub_widget in widget.winfo_children():
+                             if isinstance(sub_widget, (tk.Button, ttk.Combobox)): sub_widget.config(state=tk.DISABLED)
 
 
-    def enable_buttons(self):
-        """Aktiviert alle relevanten Buttons nach Abschluss eines Vorgangs."""
+    def enable_buttons(self): # Erweitert um model_to_delete_combobox
         for child in self.master.winfo_children():
              if isinstance(child, tk.LabelFrame):
                 for widget in child.winfo_children():
-                    if isinstance(widget, (tk.Button, ttk.Button)):
-                        widget.config(state=tk.NORMAL)
-        # Combobox speziell behandeln, da es 'readonly' sein kann
+                    if isinstance(widget, (tk.Button, ttk.Button)): widget.config(state=tk.NORMAL)
+                    elif isinstance(widget, tk.Frame): # Für install_frame und delete_frame
+                        for sub_widget in widget.winfo_children():
+                            if isinstance(sub_widget, (tk.Button)): sub_widget.config(state=tk.NORMAL)
+        # Comboboxen separat behandeln
         if self.available_ollama_models:
-            self.model_combobox.config(state="readonly")
+            self.embedding_model_combobox.config(state="readonly")
+            self.chat_model_combobox.config(state="readonly")
+            self.model_to_delete_combobox.config(state="readonly") # NEU
         else:
-            self.model_combobox.config(state="disabled")
+            self.embedding_model_combobox.config(state="disabled")
+            self.chat_model_combobox.config(state="disabled")
+            self.model_to_delete_combobox.config(state="disabled") # NEU
 
-
-    def check_thread_and_enable_buttons(self, thread):
-        if thread.is_alive():
-            self.master.after(100, self.check_thread_and_enable_buttons, thread)
-        else:
-            self.enable_buttons()
-
+    def check_thread_and_enable_buttons(self, thread): # Unverändert
+        if thread.is_alive(): self.master.after(100, self.check_thread_and_enable_buttons, thread)
+        else: self.enable_buttons()
 
 if __name__ == '__main__':
     root = tk.Tk()
